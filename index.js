@@ -5,19 +5,25 @@ var Buffer = require('buffer').Buffer;
 var gutil = require('gulp-util');
 var PluginError = gutil.PluginError;
 var map = require('event-stream').map;
+var util = require('util');
 
-var FILE_DECL = /(?:href=|src=|url\()['|"]([^\s>"']+?)\?rev=([^\s>"']+?)['|"]/gi;
+var FILE_DECL = /(href=|src=|url\()(['"])([^\s>"']+?)\?rev=([^\s>&"']+)/gi;
+var SPECIAL_DECL = /@@hash\(([^'">)]+)\)/gi;
 
-var revPlugin = function revPlugin() {
+/*
+options = {
+  basePath: <path to files>,
+  skipFileErrors: false,
+}
+ */
+var revPlugin = function revPlugin(options) {
 
   return map(function(file, cb) {
 
+    if(!options)
+      options = {};
+
     var contents;
-    var lines;
-    var i, length;
-    var line;
-    var groups;
-    var declarations;
     var dependencyPath;
     var data, hash;
 
@@ -29,43 +35,50 @@ var revPlugin = function revPlugin() {
       throw new PluginError('gulp-rev-append', 'Missing file.contents required for modifying files using gulp-rev-append.');
     }
 
-    contents = file.contents.toString();
-    lines = contents.split('\n');
-    length = lines.length;
-
-    for(i = 0; i < length; i++) {
-      line = lines[i];
-      declarations = line.match(FILE_DECL);
-      if (declarations && declarations.length > 0) {
-        for(var j = 0; j < declarations.length; j++) {
-          groups = FILE_DECL.exec(declarations[j]);
-          if(groups && groups.length > 1) {
-            // are we an "absoulte path"? (e.g. /js/app.js)
-            var normPath = path.normalize(groups[1]);
-            if (normPath.indexOf(path.sep) === 0) {
-              dependencyPath = path.join(file.base, normPath);
-            }
-            else {
-              dependencyPath = path.resolve(path.dirname(file.path), normPath);
-            }
-
-            try {
-              data = fs.readFileSync(dependencyPath);
-              hash = crypto.createHash('md5');
-              hash.update(data.toString(), 'utf8');
-              line = line.replace(groups[2], hash.digest('hex'));
-            }
-            catch(e) {
-              // fail silently.
-            }
-          }
-          FILE_DECL.lastIndex = 0;
+    function appendHash(string, filename){
+        var normPath = path.normalize(filename);
+        if(options.basePath) {
+            dependencyPath = path.join(options.basePath, normPath);
+        }else if (normPath.indexOf(path.sep) === 0) {
+            dependencyPath = path.join(file.base, normPath);
+        }else{
+            dependencyPath = path.resolve(path.dirname(file.path), normPath);
         }
-        lines[i] = line;
+
+        data = fs.readFileSync(dependencyPath);
+        hash = crypto.createHash('md5');
+        hash.update(data.toString(), 'utf8');
+
+        return string + hash.digest('base64').replace(/[=\+\/]/g, function (match) {
+            if(match === '+')
+              return '$';
+            if(match === '/')
+              return '-';
+            return '';
+        });
+    }
+
+    function appendHashWithErrorHandling(string, filename, match, offset){
+      try{
+        return appendHash(string, filename);
+      }catch(e){
+        var error = e.message + ': ' + filename + ' from statement ' + match + ' (offset ' + offset + ')';
+        console.error('gulp-rev-append: ' + error);
+        if(options.skipFileErrors)
+          return string + '';
+        throw new PluginError('gulp-rev-append', error);
       }
     }
 
-    file.contents = new Buffer(lines.join('\n'));
+    contents = file.contents.toString();
+    contents = contents.replace(FILE_DECL, function (match, attr, quote, filename, rev, offset) {
+      return appendHashWithErrorHandling(attr + quote + filename + '?rev=', filename, match, offset);
+    });
+    contents = contents.replace(SPECIAL_DECL, function (match, filename, offset) {
+      return appendHashWithErrorHandling('', filename, match, offset);
+    });
+
+    file.contents = new Buffer(contents);
     cb(null, file);
 
   });

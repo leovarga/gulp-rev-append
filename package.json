@@ -8,7 +8,7 @@
     "url": "https://github.com/bustardcelly/gulp-rev-append"
   },
   "scripts": {
-    "test": "node node_modules/.bin/cucumber-js"
+    "test": "node_modules/.bin/cucumber-js"
   },
   "keywords": [
     "gulp",
